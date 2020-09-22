@@ -8,9 +8,15 @@ import (
 	"io"
 	"io/ioutil"
 	"net/http"
+	"net/url"
+	"path"
 
 	"github.com/google/uuid"
 
+	"golang.org/x/oauth2"
+
+	"github.com/grafana/azure-data-explorer-datasource/pkg/log"
+	"github.com/grafana/grafana_plugin_model/go/datasource"
 	"github.com/grafana/grafana-plugin-sdk-go/backend"
 	"github.com/hashicorp/go-hclog"
 	"golang.org/x/oauth2/clientcredentials"
@@ -36,13 +42,15 @@ func (qm *QueryModel) Interpolate() (err error) {
 // dataSourceData holds the datasource configuration information for Azure Data Explorer's API
 // that is needed to execute a request against Azure's Data Explorer API.
 type dataSourceData struct {
-	ClientID        string `json:"clientId"`
-	TenantID        string `json:"tenantId"`
-	ClusterURL      string `json:"clusterUrl"`
-	DefaultDatabase string `json:"defaultDatabase"`
-	Secret          string `json:"-"`
-	DataConsistency string `json:"dataConsistency"`
-	CacheMaxAge     string `json:"cacheMaxAge"`
+	ClientID            string `json:"clientId"`
+	TenantID            string `json:"tenantId"`
+	ClusterURL          string `json:"clusterUrl"`
+	DefaultDatabase     string `json:"defaultDatabase"`
+	AzureADAuthEndpoint string `json:"azureADAuthEndpoint"`
+	ADXResourceEndpoint string `json:"adxResourceEndpoint"`
+	Secret              string `json:"-"`
+	DataConsistency     string `json:"dataConsistency"`
+	CacheMaxAge         string `json:"cacheMaxAge"`
 }
 
 // Client is an http.Client used for API requests.
@@ -103,11 +111,34 @@ func NewClient(ctx context.Context, dInfo *backend.DataSourceInstanceSettings) (
 		return nil, err
 	}
 
+	adAuthURL, err := url.Parse(c.AzureADAuthEndpoint)
+	if err != nil {
+		return nil, err
+	}
+	adAuthURL.Path = path.Join(adAuthURL.Path, c.TenantID, "/oauth2/v2.0/authorize")
+
+	adTokenURL, err := url.Parse(c.AzureADAuthEndpoint)
+	if err != nil {
+		return nil, err
+	}
+	adTokenURL.Path = path.Join(adTokenURL.Path, c.TenantID, "/oauth2/v2.0/token")
+
+	tokenURL := oauth2.Endpoint{
+		AuthURL:  adAuthURL.String(),
+		TokenURL: adTokenURL.String(),
+	}
+
+	adxScope, err := url.Parse(c.ADXResourceEndpoint)
+	if err != nil {
+		return nil, err
+	}
+	adxScope.Path = path.Join(adxScope.Path, ".default")
+
 	conf := clientcredentials.Config{
 		ClientID:     c.ClientID,
 		ClientSecret: c.Secret,
-		TokenURL:     microsoft.AzureADEndpoint(c.TenantID).TokenURL,
-		Scopes:       []string{"https://kusto.kusto.windows.net/.default"},
+		TokenURL:     tokenURL.TokenURL,
+		Scopes:       []string{adxScope.String()},
 	}
 
 	c.Client = conf.Client(ctx)
